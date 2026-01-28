@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Excel'den İngilizce Quiz</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 24px; max-width: 760px; }
+    .card { border: 1px solid #e5e5e5; border-radius: 14px; padding: 16px; margin: 12px 0; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    button { padding: 10px 12px; border-radius: 10px; border: 1px solid #ddd; background: #fff; cursor: pointer; }
+    button:hover { background: #fafafa; }
+    .choices { display: grid; gap: 10px; margin-top: 12px; }
+    .choice { text-align: left; padding: 12px; }
+    .choice:disabled { cursor: default; opacity: 0.95; }
+
+    .choice.correct { background: #e7f7ec; border-color: #2e7d32; }
+    .choice.wrong   { background: #fdecea; border-color: #c62828; }
+
+    .ok { color: #0a7a2f; font-weight: 700; }
+    .bad { color: #b00020; font-weight: 700; }
+    .muted { color: #666; font-size: 14px; }
+
+    input[type="text"] { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 10px; }
+    select { padding: 10px; border-radius: 10px; border: 1px solid #ddd; }
+    .pill { display:inline-block; padding:6px 10px; border:1px solid #eee; border-radius:999px; font-size:13px; color:#555; }
+    .divider { height: 1px; background: #eee; margin: 12px 0; }
+
+    .diffline { font-size: 18px; line-height: 1.7; }
+    .goodChar { background: #e7f7ec; border: 1px solid #b7e3c3; border-radius: 6px; padding: 0 4px; }
+    .badChar  { background: #fdecea; border: 1px solid #f2b8b5; border-radius: 6px; padding: 0 4px; }
+    .missChar { background: #fff6d6; border: 1px solid #f0e1a2; border-radius: 6px; padding: 0 4px; }
+    .spaceChar{ display:inline-block; min-width: 10px; }
+    .legend { display:flex; gap:10px; flex-wrap:wrap; margin-top:10px; }
+    .tag { font-size: 12px; border:1px solid #eee; border-radius:999px; padding:4px 8px; color:#555; }
+  </style>
+</head>
+<body>
+  <h2>Excel'den Quiz</h2>
+
+  <div class="card">
+    <div class="row">
+      <input id="file" type="file" accept=".xlsx,.xls" />
+      <span class="muted">Excel’i seç → içerik yüklenir</span>
+    </div>
+
+    <div class="row" style="margin-top:12px">
+      <label>Mod:</label>
+      <select id="direction">
+        <option value="EN_TR">English → Türkçe (Şıklı + Ses)</option>
+        <option value="TR_EN">Türkçe → English (Yazmalı + Hata Göster)</option>
+      </select>
+
+      <label>Quiz kaynağı:</label>
+      <select id="sourceMode">
+        <option value="ALL">Tüm sorular</option>
+        <option value="WRONG_ONLY">❌ Sadece yanlışlar</option>
+      </select>
+    </div>
+
+    <div class="muted" style="margin-top:10px">
+      Kısayollar: <b>→</b> sonraki • <b>1-4</b> şık seç (EN→TR) • <b>Enter</b> kontrol (TR→EN) • <b>↓</b> veya <b>Ctrl+Space</b> cevabı göster
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <div><b>Skor:</b> <span id="score">0</span> doğru / <span id="total">0</span> soru</div>
+      <span class="pill">Yanlış havuzu: <b id="wrongCount">0</b></span>
+      <span class="pill">Kaynak: <b id="poolLabel">Tüm sorular</b></span>
+      <span class="pill">Mod: <b id="modeLabel">EN→TR</b></span>
+    </div>
+  </div>
+
+  <div id="quiz" class="card" style="display:none">
+    <div class="muted" id="meta"></div>
+    <h3 id="prompt" style="margin: 8px 0 0 0;"></h3>
+
+    <!-- EN→TR: 4 şıklı -->
+    <div id="mcq" style="display:none">
+      <div class="choices" id="choices"></div>
+    </div>
+
+    <!-- TR→EN: yazmalı -->
+    <div id="typing" style="display:none; margin-top:12px">
+      <input id="answerInput" type="text" placeholder="İngilizce karşılığını yaz... (boşluk serbest)" />
+      <div class="row" style="margin-top:10px">
+        <button id="check">Kontrol Et</button>
+        <button id="show">Cevabı Göster</button>
+      </div>
+      <div class="legend">
+        <span class="tag">🟩 Doğru harf</span>
+        <span class="tag">🟥 Yanlış harf</span>
+        <span class="tag">🟨 Eksik harf</span>
+      </div>
+    </div>
+
+    <div id="feedback" style="margin-top:12px"></div>
+
+    <div class="divider"></div>
+
+    <div class="row" style="justify-content:center; gap:12px;">
+      <button id="start" disabled>Başlat</button>
+      <button id="next" disabled>Sonraki</button>
+      <button id="reset" disabled>Sıfırla</button>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script>
+    // -------- State --------
+    let pairs = [];
+    let wrongIds = new Set();
+    let wrongList = [];
+    let current = null; // {id,en,tr,mode,prompt,answer}
+    let score = 0;
+    let total = 0;
+
+    const el = (id) => document.getElementById(id);
+
+    function normalize(s) {
+      return (s ?? "").toString().trim().replace(/\s+/g, " ").toLowerCase();
+    }
+
+    function shuffle(arr) {
+      const a = arr.slice();
+      for (let i = a.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [a[i], a[j]] = [a[j], a[i]];
+      }
+      return a;
+    }
+
+    // -------- Speech (EN→TR şıklı sorularda İngilizce prompt okunur) --------
+    let cachedVoices = [];
+    function loadVoices() {
+      if (!("speechSynthesis" in window)) return;
+      cachedVoices = window.speechSynthesis.getVoices() || [];
+    }
+    if ("speechSynthesis" in window) {
+      loadVoices();
+      window.speechSynthesis.onvoiceschanged = () => loadVoices();
+    }
+    function pickNiceEnglishVoice() {
+      const v = cachedVoices || [];
+      return v.find(x => (x.lang || "").toLowerCase() === "en-gb")
+          || v.find(x => (x.lang || "").toLowerCase().startsWith("en-"))
+          || v.find(x => (x.lang || "").toLowerCase().startsWith("en"))
+          || null;
+    }
+    function speakEnglish(text) {
+      if (!text) return;
+      if (!("speechSynthesis" in window)) return;
+
+      const utter = new SpeechSynthesisUtterance(text);
+      const voice = pickNiceEnglishVoice();
+      if (voice) utter.voice = voice;
+
+      utter.lang = (voice?.lang) || "en-GB";
+      utter.rate = 0.85;
+      utter.pitch = 1.0;
+      utter.volume = 1;
+
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(utter);
+    }
+
+    function updateStats() {
+      el("score").textContent = String(score);
+      el("total").textContent = String(total);
+      el("wrongCount").textContent = String(wrongList.length);
+      el("poolLabel").textContent = (el("sourceMode").value === "WRONG_ONLY") ? "Yanlışlar" : "Tüm sorular";
+      const mode = el("direction").value;
+      el("modeLabel").textContent = (mode === "EN_TR") ? "EN→TR" : "TR→EN";
+    }
+
+    function setFeedback(html) {
+      el("feedback").innerHTML = html;
+    }
+
+    function showQuizUI(show) {
+      el("quiz").style.display = show ? "block" : "none";
+    }
+
+    function makeId(en, tr) {
+      return normalize(en) + "||" + normalize(tr);
+    }
+
+    function getPool() {
+      if (el("sourceMode").value === "WRONG_ONLY") return wrongList;
+      return pairs.map(p => ({ ...p, id: makeId(p.en, p.tr) }));
+    }
+
+    function getQA(item, mode) {
+      if (mode === "EN_TR") return { prompt: item.en, answer: item.tr };
+      return { prompt: item.tr, answer: item.en };
+    }
+
+    function buildMCQ(correctAnswer, correctId) {
+      const options = [correctAnswer];
+      const used = new Set([normalize(correctAnswer)]);
+
+      let tries = 0;
+      while (options.length < 4 && tries < 2000) {
+        tries++;
+        const p = pairs[Math.floor(Math.random() * pairs.length)];
+        const id = makeId(p.en, p.tr);
+        if (id === correctId) continue;
+
+        const ans = p.tr; // EN_TR için yanlışlar Türkçe
+        const key = normalize(ans);
+        if (!key || used.has(key)) continue;
+
+        used.add(key);
+        options.push(ans);
+      }
+      return shuffle(options).slice(0, 4);
+    }
+
+    function markWrongById(id, en, tr) {
+      if (wrongIds.has(id)) return;
+      wrongIds.add(id);
+      wrongList.push({ id, en, tr });
+      updateStats();
+    }
+
+    function clearChoiceStyles() {
+      const btns = document.querySelectorAll("#choices .choice");
+      btns.forEach(b => {
+        b.classList.remove("correct", "wrong");
+        b.disabled = false;
+      });
+    }
+
+    function highlightMCQ(selectedText) {
+      const btns = document.querySelectorAll("#choices .choice");
+      const sel = normalize(selectedText);
+      const correct = normalize(current.answer);
+
+      btns.forEach(b => {
+        const t = normalize(b.textContent);
+        if (t === correct) b.classList.add("correct");
+        if (t === sel && sel !== correct) b.classList.add("wrong");
+        b.disabled = true;
+      });
+    }
+
+    function buildDiff(user, correct) {
+      const u = (user ?? "").toString();
+      const c = (correct ?? "").toString();
+
+      const max = Math.max(u.length, c.length);
+      let userHtml = "";
+      let corrHtml = "";
+
+      for (let i = 0; i < max; i++) {
+        const uc = u[i];
+        const cc = c[i];
+
+        if (uc !== undefined && cc !== undefined && uc.toLowerCase() === cc.toLowerCase()) {
+          const chU = uc === " " ? `<span class="spaceChar">&nbsp;</span>` : uc;
+          const chC = cc === " " ? `<span class="spaceChar">&nbsp;</span>` : cc;
+          userHtml += `<span class="goodChar">${chU}</span>`;
+          corrHtml += `<span class="goodChar">${chC}</span>`;
+          continue;
+        }
+
+        if (uc !== undefined && cc === undefined) {
+          const chU = uc === " " ? `<span class="spaceChar">&nbsp;</span>` : uc;
+          userHtml += `<span class="badChar">${chU}</span>`;
+          continue;
+        }
+
+        if (uc === undefined && cc !== undefined) {
+          const chC = cc === " " ? `<span class="spaceChar">&nbsp;</span>` : cc;
+          corrHtml += `<span class="missChar">${chC}</span>`;
+          continue;
+        }
+
+        if (uc !== undefined && cc !== undefined) {
+          const chU = uc === " " ? `<span class="spaceChar">&nbsp;</span>` : uc;
+          const chC = cc === " " ? `<span class="spaceChar">&nbsp;</span>` : cc;
+          userHtml += `<span class="badChar">${chU}</span>`;
+          corrHtml += `<span class="badChar">${chC}</span>`;
+        }
+      }
+
+      return `
+        <div class="muted" style="margin-top:10px">Senin yazdığın:</div>
+        <div class="diffline">${userHtml || "<span class='muted'>(boş)</span>"}</div>
+        <div class="muted" style="margin-top:10px">Doğru cevap:</div>
+        <div class="diffline">${corrHtml || correct}</div>
+      `;
+    }
+
+    function renderQuestion() {
+      if (!current) return;
+
+      showQuizUI(true);
+      el("prompt").textContent = current.prompt;
+      setFeedback("");
+
+      const isENTR = current.mode === "EN_TR";
+      el("mcq").style.display = isENTR ? "block" : "none";
+      el("typing").style.display = isENTR ? "none" : "block";
+      el("meta").textContent = isENTR ? "EN→TR: Şıklı (+ Ses)" : "TR→EN: Yazmalı (hata gösterir)";
+
+      if (isENTR) {
+        const opts = buildMCQ(current.answer, current.id);
+        const container = el("choices");
+        container.innerHTML = "";
+        opts.forEach(opt => {
+          const btn = document.createElement("button");
+          btn.className = "choice";
+          btn.textContent = opt;
+          btn.onclick = () => checkMCQ(opt);
+          container.appendChild(btn);
+        });
+        clearChoiceStyles();
+
+        // ✅ SES: Şıklı (EN→TR) soruda İngilizce prompt'u otomatik oku
+        speakEnglish(current.prompt);
+      } else {
+        el("answerInput").value = "";
+        el("answerInput").focus();
+      }
+
+      updateStats();
+    }
+
+    function nextQuestion() {
+      const pool = getPool();
+      if (!pool.length) {
+        alert("Bu modda soru yok. (Sadece yanlışlar seçiliyse önce yanlış yapman lazım 😄)");
+        return;
+      }
+
+      const item = pool[Math.floor(Math.random() * pool.length)];
+      const mode = el("direction").value; // kullanıcı seçiyor
+      const qa = getQA(item, mode);
+
+      current = {
+        id: item.id ?? makeId(item.en, item.tr),
+        en: item.en,
+        tr: item.tr,
+        mode,
+        prompt: qa.prompt,
+        answer: qa.answer
+      };
+
+      renderQuestion();
+    }
+
+    function checkMCQ(selected) {
+      total++;
+      const ok = normalize(selected) === normalize(current.answer);
+
+      highlightMCQ(selected);
+
+      if (ok) {
+        score++;
+        setFeedback(`<div class="ok">✅ Doğru</div>`);
+      } else {
+        markWrongById(current.id, current.en, current.tr);
+        setFeedback(`<div class="bad">❌ Yanlış</div><div class="muted">Doğru cevap: <b>${current.answer}</b></div>`);
+      }
+      updateStats();
+    }
+
+    function checkTyping() {
+      total++;
+      const typed = el("answerInput").value;
+      const ok = normalize(typed) === normalize(current.answer);
+
+      if (ok) {
+        score++;
+        setFeedback(`<div class="ok">✅ Doğru</div>`);
+      } else {
+        markWrongById(current.id, current.en, current.tr);
+        setFeedback(`<div class="bad">❌ Yanlış</div>${buildDiff(typed, current.answer)}`);
+      }
+      updateStats();
+    }
+
+    function showAnswer() {
+      if (!current) return;
+      if (current.mode === "EN_TR") {
+        setFeedback(`<div class="muted">Doğru cevap: <b>${current.answer}</b></div>`);
+        highlightMCQ(current.answer);
+      } else {
+        const typed = el("answerInput").value;
+        setFeedback(`<div class="muted">Doğru cevap: <b>${current.answer}</b></div>${buildDiff(typed, current.answer)}`);
+      }
+    }
+
+    function resetAll() {
+      current = null;
+      score = 0;
+      total = 0;
+      wrongIds = new Set();
+      wrongList = [];
+      updateStats();
+      setFeedback("");
+      showQuizUI(false);
+
+      el("start").disabled = pairs.length < 4;
+      el("next").disabled = true;
+      el("reset").disabled = pairs.length < 4;
+    }
+
+    // yanlışlar moduna geçince
+    el("sourceMode").addEventListener("change", () => {
+      updateStats();
+      if (el("sourceMode").value === "WRONG_ONLY") {
+        if (wrongList.length === 0) {
+          alert("Henüz yanlış havuzun boş. Önce birkaç soru yanlış yap 😄");
+          return;
+        }
+        el("next").disabled = false;
+        nextQuestion();
+      }
+    });
+
+    // Mod değişince: yeni soru getir
+    el("direction").addEventListener("change", () => {
+      updateStats();
+      if (current) nextQuestion();
+    });
+
+    // ---------- Excel Load ----------
+    el("file").addEventListener("change", async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+
+      const data = await file.arrayBuffer();
+      const wb = XLSX.read(data, { type: "array" });
+
+      const sheetName = wb.SheetNames[0];
+      const ws = wb.Sheets[sheetName];
+      const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
+
+      function findKey(obj, candidates) {
+        const keys = Object.keys(obj);
+        for (const k of keys) {
+          const nk = normalize(k);
+          if (candidates.includes(nk)) return k;
+        }
+        return null;
+      }
+
+      const mapped = [];
+      for (const r of rows) {
+        const enKey = findKey(r, ["english", "ingilizce"]);
+        const trKey = findKey(r, ["turkish", "türkçe", "turkce"]);
+        if (!enKey || !trKey) continue;
+
+        const en = (r[enKey] ?? "").toString().trim();
+        const tr = (r[trKey] ?? "").toString().trim();
+        if (en && tr) mapped.push({ en, tr });
+      }
+
+      pairs = mapped;
+
+      if (pairs.length < 4) {
+        alert("Excel okundu ama en az 4 satır lazım (English + Turkish dolu).");
+        pairs = [];
+        resetAll();
+        return;
+      }
+
+      showQuizUI(true);
+      score = 0; total = 0;
+      wrongIds = new Set();
+      wrongList = [];
+      updateStats();
+      setFeedback("");
+
+      el("start").disabled = false;
+      el("next").disabled = true;
+      el("reset").disabled = false;
+
+      alert(`Yüklendi ✅ Toplam kart: ${pairs.length}\nŞimdi 'Başlat'a bas.`);
+    });
+
+    // ---------- Buttons ----------
+    el("start").addEventListener("click", () => {
+      el("next").disabled = false;
+      nextQuestion();
+    });
+    el("next").addEventListener("click", () => nextQuestion());
+    el("reset").addEventListener("click", () => resetAll());
+
+    el("check").addEventListener("click", () => checkTyping());
+    el("show").addEventListener("click", () => showAnswer());
+
+    // Enter = yazmalı kontrol (Space serbest!)
+    el("answerInput").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") checkTyping();
+    });
+
+    // ⌨️ Klavye (Space tek başına artık YOK)
+    document.addEventListener("keydown", (e) => {
+      if (!current) return;
+
+      // → = sonraki
+      if (e.key === "ArrowRight") { e.preventDefault(); nextQuestion(); return; }
+
+      // ↓ = cevap göster (Space yerine)
+      if (e.key === "ArrowDown") { e.preventDefault(); showAnswer(); return; }
+
+      // Ctrl+Space = cevap göster (opsiyonel)
+      if (e.ctrlKey && e.key === " ") { e.preventDefault(); showAnswer(); return; }
+
+      // EN→TR ise 1-4 şık
+      if (current.mode === "EN_TR") {
+        const buttons = document.querySelectorAll("#choices .choice");
+        if (e.key === "1" && buttons[0]) { buttons[0].click(); return; }
+        if (e.key === "2" && buttons[1]) { buttons[1].click(); return; }
+        if (e.key === "3" && buttons[2]) { buttons[2].click(); return; }
+        if (e.key === "4" && buttons[3]) { buttons[3].click(); return; }
+      }
+    });
+
+    updateStats();
+  </script>
+</body>
+</html>
